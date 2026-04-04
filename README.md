@@ -25,18 +25,22 @@ cftunnel run my-api
 - [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) installed and authenticated (`cloudflared tunnel login`)
 - Bash 4+
 
-### Option 1: Clone the repo
+### Option 1: Homebrew
 ```bash
-git clone https://github.com/usedilver/cloudflare-tunnel-cli.git
-cd cloudflare-tunnel-cli
-sudo ln -s "$(pwd)/cftunnel" /usr/local/bin/cftunnel
+brew tap usedilver/tap
+brew install cftunnel
 ```
 
-### Option 2: Direct download
+### Option 2: curl
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dilverdev/cloudflare-tunnel-cli/main/cftunnel -o /usr/local/bin/cftunnel
-chmod +x /usr/local/bin/cftunnel
+curl -fsSL https://raw.githubusercontent.com/usedilver/cloudflare-tunnel-cli/main/cftunnel -o ~/.local/bin/cftunnel
+chmod +x ~/.local/bin/cftunnel
 ```
+
+> Make sure `~/.local/bin` is in your `PATH`. If not, add this to your shell profile:
+> ```bash
+> export PATH="$HOME/.local/bin:$PATH"
+> ```
 
 ## Usage
 
@@ -60,13 +64,13 @@ cftunnel run
 ```
 Shows all configured tunnels and lets you choose which one to start:
 ```
-Tunnels disponibles:
+Available tunnels:
 
    1) my-api              https://my-api.example.com             :3000
    2) my-web              https://my-web.example.com             :8080
    3) testing             https://testing.example.com            :5000
 
-Selecciona tunnel (1-3) o 'q' para salir:
+Select tunnel (1-3) or 'q' to quit:
 ```
 
 ### List tunnels
