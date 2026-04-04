@@ -1,0 +1,128 @@
+# cftunnel
+
+CLI to manage Cloudflare Tunnels in a single command. Automates the full lifecycle: **create tunnel + configure DNS + generate config + run**.
+
+> No more manual steps. One command to create, one to run.
+
+## Why?
+
+Setting up a named tunnel with `cloudflared` requires multiple steps:
+
+1. `cloudflared tunnel create name`
+2. `cloudflared tunnel route dns name hostname`
+3. Manually create a `.yml` file with the tunnel ID, credentials path, and ingress rules
+4. `cloudflared tunnel --config file.yml run`
+
+**cftunnel** reduces this to:
+```bash
+cftunnel create my-api example.com 3000
+cftunnel run my-api
+```
+
+## Installation
+
+### Requirements
+- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) installed and authenticated (`cloudflared tunnel login`)
+- Bash 4+
+
+### Option 1: Clone the repo
+```bash
+git clone https://github.com/usedilver/cloudflare-tunnel-cli.git
+cd cloudflare-tunnel-cli
+sudo ln -s "$(pwd)/cftunnel" /usr/local/bin/cftunnel
+```
+
+### Option 2: Direct download
+```bash
+curl -fsSL https://raw.githubusercontent.com/dilverdev/cloudflare-tunnel-cli/main/cftunnel -o /usr/local/bin/cftunnel
+chmod +x /usr/local/bin/cftunnel
+```
+
+## Usage
+
+### Create a tunnel
+```bash
+cftunnel create my-api example.com 3000
+```
+In a single step, this:
+- Creates the tunnel in Cloudflare (or reuses an existing one)
+- Configures the DNS route (`my-api.example.com`)
+- Generates the `.yml` configuration file
+
+### Run a tunnel
+```bash
+cftunnel run my-api
+```
+
+### Interactive selector
+```bash
+cftunnel run
+```
+Shows all configured tunnels and lets you choose which one to start:
+```
+Tunnels disponibles:
+
+   1) my-api              https://my-api.example.com             :3000
+   2) my-web              https://my-web.example.com             :8080
+   3) testing             https://testing.example.com            :5000
+
+Selecciona tunnel (1-3) o 'q' para salir:
+```
+
+### List tunnels
+```bash
+cftunnel list
+```
+
+### Change port
+```bash
+cftunnel port my-api 8080
+```
+
+### Edit configuration
+```bash
+cftunnel edit my-api
+```
+
+### Delete a tunnel
+```bash
+cftunnel delete my-api
+```
+Removes the tunnel from Cloudflare, deletes the config file and credentials.
+
+### View tunnels in Cloudflare
+```bash
+cftunnel status
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `cftunnel create <name> <domain> <port>` | Create tunnel + DNS route + config |
+| `cftunnel run [name]` | Run a tunnel (interactive if no name given) |
+| `cftunnel list` | List locally configured tunnels |
+| `cftunnel delete <name>` | Delete tunnel and cleanup files |
+| `cftunnel edit <name>` | Open tunnel config in your editor |
+| `cftunnel port <name> <port>` | Change a tunnel's port |
+| `cftunnel status` | Show tunnels registered in Cloudflare |
+| `cftunnel help` | Show help |
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLOUDFLARED_DIR` | `~/.cloudflared` | Directory where configs are stored |
+
+## Compatibility
+
+- macOS (auto-opens browser with `open`)
+- Linux (auto-opens browser with `xdg-open`)
+
+## Contributing
+
+Contributions are welcome! Feel free to open issues and pull requests.
+
+## License
+
+[MIT](LICENSE)

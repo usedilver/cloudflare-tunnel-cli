@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+# ============================================================================
+# cftunnel - CLI para gestionar túneles de Cloudflare
+# https://github.com/usedilver/cloudflare-tunnel-cli
+#
+# Automatiza el ciclo completo: crear, configurar DNS, generar config y ejecutar.
+# Funciona en macOS y Linux.
+# ============================================================================
+
+set -euo pipefail
+
+VERSION="1.0.0"
+CLOUDFLARED_DIR="${CLOUDFLARED_DIR:-$HOME/.cloudflared}"
+
+# -- Colores ------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  GREEN='\033[0;32m'  BLUE='\033[0;34m'  CYAN='\033[0;36m'
+  YELLOW='\033[1;33m' RED='\033[0;31m'    BOLD='\033[1m'
+  DIM='\033[2m'       NC='\033[0m'
+else
+  GREEN='' BLUE='' CYAN='' YELLOW='' RED='' BOLD='' DIM='' NC=''
+fi
+
+# -- Helpers ------------------------------------------------------------------
+info()  { echo -e "${CYAN}[info]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[ok]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
+err()   { echo -e "${RED}[error]${NC} $*" >&2; }
+die()   { err "$@"; exit 1; }
+
+check_cloudflared() {
+  command -v cloudflared &>/dev/null || die "cloudflared no está instalado. Instala con: brew install cloudflared"
+}
+
+# Abrir URL de forma portable (macOS / Linux)
+open_url() {
+  local url="$1"
+  if command -v open &>/dev/null; then
+    open "$url" 2>/dev/null
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "$url" 2>/dev/null
+  fi
+}
+
+# -- Subcomandos --------------------------------------------------------------
+
+# cftunnel create <nombre> <dominio> <puerto>
+cmd_create() {
+  if [[ $# -lt 3 ]]; then
+    echo "Uso: cftunnel create <nombre> <dominio> <puerto>"
+    echo ""
+    echo "Ejemplo: cftunnel create mi-api usedilver.com 3000"
+    echo "  -> Crea el tunnel 'mi-api' en mi-api.usedilver.com:3000"
+    exit 1
+  fi
+
+  local name="$1" domain="$2" port="$3"
+  local hostname="${name}.${domain}"
+
+  check_cloudflared
+
+  info "Configurando tunnel: ${BOLD}${hostname}${NC} -> localhost:${port}"
+  echo ""
+
+  # 1. Crear tunnel (o reutilizar existente)
+  local tunnel_id=""
+  local create_output
+  if create_output=$(cloudflared tunnel create "$name" 2>&1); then
+    tunnel_id=$(echo "$create_output" | grep -oE '[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}' | head -n1 | tr -d '[:space:]')
+    ok "Tunnel creado: ${tunnel_id}"
+  else
+    if [[ "$create_output" == *"already exists"* ]]; then
+      warn "Tunnel '${name}' ya existe, reutilizando..."
+      tunnel_id=$(cloudflared tunnel list -o json 2>/dev/null | grep -oE "\"id\":\"[a-f0-9-]+\"" | head -n1 | cut -d'"' -f4)
+      # Fallback: parsear de tunnel list texto
+      if [[ -z "$tunnel_id" ]]; then
+        tunnel_id=$(cloudflared tunnel list 2>/dev/null | grep "$name" | awk '{print $1}' | head -n1 | tr -d '[:space:]')
+      fi
+    else
+      die "Error creando tunnel:\n${create_output}"
+    fi
+  fi
+
+  [[ -z "$tunnel_id" ]] && die "No se pudo obtener el Tunnel ID."
+
+  # 2. Ruta DNS
+  info "Configurando DNS: ${hostname}..."
+  if cloudflared tunnel route dns "$name" "$hostname" 2>&1; then
+    ok "DNS configurado"
+  else
+    warn "La ruta DNS puede que ya exista (esto es normal)"
+  fi
+
+  # 3. Generar config YAML
+  local config_file="${CLOUDFLARED_DIR}/${name}.yml"
+  cat > "$config_file" <<EOF
+tunnel: ${tunnel_id}
+credentials-file: ${CLOUDFLARED_DIR}/${tunnel_id}.json
+
+ingress:
+  - hostname: ${hostname}
+    service: http://localhost:${port}
+  - service: http_status:404
+EOF
+
+  ok "Config generada: ${config_file}"
+  echo ""
+  echo -e "${GREEN}========================================${NC}"
+  echo -e "  Tunnel ${BOLD}${name}${NC} listo"
+  echo -e "  URL:    ${BLUE}https://${hostname}${NC}"
+  echo -e "  Puerto: localhost:${port}"
+  echo -e ""
+  echo -e "  Ejecutar: ${YELLOW}cftunnel run ${name}${NC}"
+  echo -e "${GREEN}========================================${NC}"
+}
+
+# cftunnel run [nombre]
+cmd_run() {
+  check_cloudflared
+
+  local name="${1:-}"
+
+  # Si no se pasa nombre, mostrar selector interactivo
+  if [[ -z "$name" ]]; then
+    cmd_run_interactive
+    return
+  fi
+
+  local config_file="${CLOUDFLARED_DIR}/${name}.yml"
+  [[ -f "$config_file" ]] || die "Config no encontrada: ${config_file}\nUsa 'cftunnel list' para ver tunnels disponibles."
+
+  local hostname
+  hostname=$(grep 'hostname:' "$config_file" | head -n1 | awk '{print $NF}')
+
+  info "Iniciando tunnel: ${BOLD}${name}${NC}"
+  [[ -n "$hostname" ]] && info "URL: ${BLUE}https://${hostname}${NC}"
+  echo ""
+
+  # Abrir navegador tras breve pausa
+  if [[ -n "$hostname" ]]; then
+    (sleep 2 && open_url "https://${hostname}") &
+  fi
+
+  cloudflared tunnel --config "$config_file" run
+}
+
+cmd_run_interactive() {
+  local configs=()
+  while IFS= read -r f; do
+    configs+=("$f")
+  done < <(grep -l "tunnel:" "${CLOUDFLARED_DIR}"/*.yml 2>/dev/null || true)
+
+  if [[ ${#configs[@]} -eq 0 ]]; then
+    die "No hay tunnels configurados.\nCrea uno con: cftunnel create <nombre> <dominio> <puerto>"
+  fi
+
+  echo -e "${BOLD}Tunnels disponibles:${NC}"
+  echo ""
+
+  local names=() hostnames=() ports=()
+  for i in "${!configs[@]}"; do
+    local file="${configs[$i]}"
+    local fname
+    fname=$(basename "$file" .yml)
+    local host
+    host=$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')
+    local port
+    port=$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')
+
+    names+=("$fname")
+    hostnames+=("$host")
+    ports+=("$port")
+
+    printf "  ${YELLOW}%2d)${NC} ${BOLD}%-20s${NC}  ${BLUE}https://%-30s${NC}  ${DIM}:${port}${NC}\n" \
+      "$((i+1))" "$fname" "$host"
+  done
+
+  echo ""
+  echo -ne "${CYAN}Selecciona tunnel (1-${#configs[@]}) o 'q' para salir: ${NC}"
+  read -r choice
+
+  [[ "$choice" == "q" || "$choice" == "Q" ]] && exit 0
+
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#configs[@]} )); then
+    die "Seleccion invalida."
+  fi
+
+  local idx=$((choice - 1))
+  echo ""
+  cmd_run "${names[$idx]}"
+}
+
+# cftunnel list
+cmd_list() {
+  local configs=()
+  while IFS= read -r f; do
+    configs+=("$f")
+  done < <(grep -l "tunnel:" "${CLOUDFLARED_DIR}"/*.yml 2>/dev/null || true)
+
+  if [[ ${#configs[@]} -eq 0 ]]; then
+    info "No hay tunnels configurados."
+    echo "  Crea uno con: cftunnel create <nombre> <dominio> <puerto>"
+    return
+  fi
+
+  echo -e "${BOLD}Tunnels configurados:${NC}"
+  echo ""
+  printf "  ${DIM}%-20s %-35s %-8s %-40s${NC}\n" "NOMBRE" "HOSTNAME" "PUERTO" "TUNNEL ID"
+  printf "  ${DIM}%-20s %-35s %-8s %-40s${NC}\n" "------" "--------" "------" "---------"
+
+  for file in "${configs[@]}"; do
+    local fname
+    fname=$(basename "$file" .yml)
+    local host
+    host=$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')
+    local port
+    port=$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')
+    local tid
+    tid=$(grep '^tunnel:' "$file" | awk '{print $NF}')
+
+    printf "  ${BOLD}%-20s${NC} ${BLUE}%-35s${NC} ${CYAN}%-8s${NC} ${DIM}%-40s${NC}\n" \
+      "$fname" "$host" ":${port}" "$tid"
+  done
+  echo ""
+}
+
+# cftunnel delete <nombre>
+cmd_delete() {
+  if [[ $# -lt 1 ]]; then
+    echo "Uso: cftunnel delete <nombre>"
+    exit 1
+  fi
+
+  local name="$1"
+  local config_file="${CLOUDFLARED_DIR}/${name}.yml"
+
+  [[ -f "$config_file" ]] || die "Config no encontrada: ${config_file}"
+
+  check_cloudflared
+
+  local tid
+  tid=$(grep '^tunnel:' "$config_file" | awk '{print $NF}')
+  local cred_file="${CLOUDFLARED_DIR}/${tid}.json"
+
+  echo -e "${YELLOW}Vas a eliminar el tunnel '${name}'${NC}"
+  [[ -n "$tid" ]] && echo -e "  Tunnel ID: ${DIM}${tid}${NC}"
+  echo ""
+  echo -ne "${RED}Confirmar? (y/N): ${NC}"
+  read -r confirm
+  [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo "Cancelado."; exit 0; }
+
+  # 1. Limpiar conexiones del tunnel
+  info "Limpiando conexiones..."
+  cloudflared tunnel cleanup "$name" 2>/dev/null || true
+
+  # 2. Eliminar tunnel en Cloudflare
+  info "Eliminando tunnel..."
+  if cloudflared tunnel delete "$name" 2>&1; then
+    ok "Tunnel eliminado de Cloudflare"
+  else
+    warn "No se pudo eliminar de Cloudflare (puede que ya no exista)"
+  fi
+
+  # 3. Eliminar archivos locales
+  rm -f "$config_file"
+  ok "Config eliminada: ${config_file}"
+
+  if [[ -f "$cred_file" ]]; then
+    rm -f "$cred_file"
+    ok "Credenciales eliminadas: ${cred_file}"
+  fi
+
+  echo ""
+  ok "Tunnel '${name}' eliminado completamente."
+}
+
+# cftunnel edit <nombre>
+cmd_edit() {
+  if [[ $# -lt 1 ]]; then
+    echo "Uso: cftunnel edit <nombre>"
+    exit 1
+  fi
+
+  local name="$1"
+  local config_file="${CLOUDFLARED_DIR}/${name}.yml"
+
+  [[ -f "$config_file" ]] || die "Config no encontrada: ${config_file}"
+
+  "${EDITOR:-nano}" "$config_file"
+  ok "Configuracion actualizada: ${config_file}"
+}
+
+# cftunnel port <nombre> <nuevo-puerto>
+cmd_port() {
+  if [[ $# -lt 2 ]]; then
+    echo "Uso: cftunnel port <nombre> <nuevo-puerto>"
+    echo ""
+    echo "Cambia el puerto de un tunnel existente."
+    exit 1
+  fi
+
+  local name="$1" new_port="$2"
+  local config_file="${CLOUDFLARED_DIR}/${name}.yml"
+
+  [[ -f "$config_file" ]] || die "Config no encontrada: ${config_file}"
+
+  # Reemplazar el puerto en la config
+  if sed -i.bak "s|service: http://localhost:[0-9]*|service: http://localhost:${new_port}|" "$config_file"; then
+    rm -f "${config_file}.bak"
+    ok "Puerto actualizado a ${new_port} para '${name}'"
+  else
+    die "Error actualizando el puerto."
+  fi
+}
+
+# cftunnel status
+cmd_status() {
+  check_cloudflared
+
+  info "Tunnels registrados en Cloudflare:"
+  echo ""
+  cloudflared tunnel list 2>&1
+}
+
+# -- Main ---------------------------------------------------------------------
+cmd_help() {
+  cat <<EOF
+${BOLD}cftunnel${NC} v${VERSION} - Gestiona tunnels de Cloudflare facilmente
+
+${BOLD}USO:${NC}
+  cftunnel <comando> [argumentos]
+
+${BOLD}COMANDOS:${NC}
+  ${GREEN}create${NC} <nombre> <dominio> <puerto>   Crear tunnel + DNS + config
+  ${GREEN}run${NC}    [nombre]                        Ejecutar tunnel (interactivo si no hay nombre)
+  ${GREEN}list${NC}                                   Listar tunnels configurados
+  ${GREEN}delete${NC} <nombre>                        Eliminar tunnel y archivos
+  ${GREEN}edit${NC}   <nombre>                        Editar config YAML del tunnel
+  ${GREEN}port${NC}   <nombre> <puerto>               Cambiar puerto de un tunnel
+  ${GREEN}status${NC}                                 Ver tunnels en Cloudflare
+
+${BOLD}EJEMPLOS:${NC}
+  cftunnel create mi-api usedilver.com 3000
+  cftunnel run mi-api
+  cftunnel run                  ${DIM}# selector interactivo${NC}
+  cftunnel port mi-api 8080
+  cftunnel list
+  cftunnel delete mi-api
+
+${BOLD}VARIABLES DE ENTORNO:${NC}
+  CLOUDFLARED_DIR   Directorio de configs (default: ~/.cloudflared)
+
+${DIM}Requiere: cloudflared (brew install cloudflared)${NC}
+EOF
+}
+
+cmd_version() {
+  echo "cftunnel v${VERSION}"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$cmd" in
+    create)   cmd_create "$@" ;;
+    run|start) cmd_run "$@" ;;
+    list|ls)  cmd_list ;;
+    delete|rm) cmd_delete "$@" ;;
+    edit)     cmd_edit "$@" ;;
+    port)     cmd_port "$@" ;;
+    status)   cmd_status ;;
+    help|--help|-h) cmd_help ;;
+    version|--version|-v) cmd_version ;;
+    *)        err "Comando desconocido: ${cmd}"; echo ""; cmd_help; exit 1 ;;
+  esac
+}
+
+main "$@"
