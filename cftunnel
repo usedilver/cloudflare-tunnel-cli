@@ -155,8 +155,7 @@ cmd_run_interactive() {
   fi
 
   local names=() hostnames=() ports=()
-  for i in "${!configs[@]}"; do
-    local file="${configs[$i]}"
+  for file in "${configs[@]}"; do
     names+=("$(basename "$file" .yml)")
     hostnames+=("$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')")
     ports+=("$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')")
@@ -165,17 +164,14 @@ cmd_run_interactive() {
   local selected=0
   local total=${#names[@]}
 
-  # Save terminal state and hide cursor
-  tput smcup 2>/dev/null || true
-  tput civis 2>/dev/null || true
+  # Disable strict mode for interactive input handling
+  set +e
 
-  # Restore terminal on exit
-  trap '_selector_cleanup' EXIT
+  tput civis 2>/dev/null
 
   while true; do
-    # Move cursor to top
-    tput cup 0 0 2>/dev/null || printf '\033[H'
-    tput ed 2>/dev/null || printf '\033[J'
+    # Clear and redraw
+    printf '\033[H\033[J'
 
     echo -e "${BOLD}Select a tunnel${NC}  ${DIM}(↑/↓ navigate, enter select, q quit)${NC}"
     echo ""
@@ -185,43 +181,38 @@ cmd_run_interactive() {
         printf "  ${GREEN}❯${NC} ${BOLD}%-20s${NC}  ${BLUE}https://%-30s${NC}  ${DIM}:%s${NC}\n" \
           "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
       else
-        printf "    ${DIM}%-20s${NC}  ${DIM}https://%-30s${NC}  ${DIM}:%s${NC}\n" \
+        printf "    ${DIM}%-20s  https://%-30s  :%s${NC}\n" \
           "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
       fi
     done
 
-    # Read a single keypress
-    IFS= read -rsn1 key
+    IFS= read -rsn1 key || true
 
     case "$key" in
-      $'\x1b')  # Escape sequence (arrow keys)
-        read -rsn2 -t 0.1 seq || true
+      $'\x1b')
+        local seq=""
+        read -rsn2 -t 1 seq || true
         case "$seq" in
-          '[A') ((selected > 0)) && ((selected--)) ;;           # Up
-          '[B') ((selected < total - 1)) && ((selected++)) ;;   # Down
+          '[A') ((selected > 0)) && ((selected--)) ;;
+          '[B') ((selected < total - 1)) && ((selected++)) ;;
         esac
         ;;
-      k) ((selected > 0)) && ((selected--)) ;;             # vim up
-      j) ((selected < total - 1)) && ((selected++)) ;;     # vim down
-      '') # Enter
-        _selector_cleanup
-        trap - EXIT
+      k) ((selected > 0)) && ((selected--)) ;;
+      j) ((selected < total - 1)) && ((selected++)) ;;
+      '')
+        tput cnorm 2>/dev/null
+        set -e
         echo ""
         cmd_run "${names[$selected]}"
         return
         ;;
       q|Q)
-        _selector_cleanup
-        trap - EXIT
+        tput cnorm 2>/dev/null
+        set -e
         exit 0
         ;;
     esac
   done
-}
-
-_selector_cleanup() {
-  tput cnorm 2>/dev/null || true   # Show cursor
-  tput rmcup 2>/dev/null || true   # Restore terminal
 }
 
 # cftunnel list
@@ -358,34 +349,32 @@ cmd_status() {
 
 # -- Main ---------------------------------------------------------------------
 cmd_help() {
-  cat <<EOF
-${BOLD}cftunnel${NC} v${VERSION} - Manage Cloudflare Tunnels easily
-
-${BOLD}USAGE:${NC}
-  cftunnel <command> [arguments]
-
-${BOLD}COMMANDS:${NC}
-  ${GREEN}create${NC} <name> <domain> <port>   Create tunnel + DNS route + config
-  ${GREEN}run${NC}    [name]                     Run tunnel (interactive if no name given)
-  ${GREEN}list${NC}                              List configured tunnels
-  ${GREEN}delete${NC} <name>                     Delete tunnel and related files
-  ${GREEN}edit${NC}   <name>                     Edit tunnel YAML config
-  ${GREEN}port${NC}   <name> <port>              Change tunnel port
-  ${GREEN}status${NC}                            Show tunnels in Cloudflare
-
-${BOLD}EXAMPLES:${NC}
-  cftunnel create my-api example.com 3000
-  cftunnel run my-api
-  cftunnel run                  ${DIM}# interactive selector${NC}
-  cftunnel port my-api 8080
-  cftunnel list
-  cftunnel delete my-api
-
-${BOLD}ENVIRONMENT VARIABLES:${NC}
-  CLOUDFLARED_DIR   Config directory (default: ~/.cloudflared)
-
-${DIM}Requires: cloudflared (brew install cloudflared)${NC}
-EOF
+  echo -e "${BOLD}cftunnel${NC} v${VERSION} - Manage Cloudflare Tunnels easily"
+  echo ""
+  echo -e "${BOLD}USAGE:${NC}"
+  echo "  cftunnel <command> [arguments]"
+  echo ""
+  echo -e "${BOLD}COMMANDS:${NC}"
+  echo -e "  ${GREEN}create${NC} <name> <domain> <port>   Create tunnel + DNS route + config"
+  echo -e "  ${GREEN}run${NC}    [name]                     Run tunnel (interactive if no name given)"
+  echo -e "  ${GREEN}list${NC}                              List configured tunnels"
+  echo -e "  ${GREEN}delete${NC} <name>                     Delete tunnel and related files"
+  echo -e "  ${GREEN}edit${NC}   <name>                     Edit tunnel YAML config"
+  echo -e "  ${GREEN}port${NC}   <name> <port>              Change tunnel port"
+  echo -e "  ${GREEN}status${NC}                            Show tunnels in Cloudflare"
+  echo ""
+  echo -e "${BOLD}EXAMPLES:${NC}"
+  echo "  cftunnel create my-api example.com 3000"
+  echo "  cftunnel run my-api"
+  echo -e "  cftunnel run                  ${DIM}# interactive selector${NC}"
+  echo "  cftunnel port my-api 8080"
+  echo "  cftunnel list"
+  echo "  cftunnel delete my-api"
+  echo ""
+  echo -e "${BOLD}ENVIRONMENT VARIABLES:${NC}"
+  echo "  CLOUDFLARED_DIR   Config directory (default: ~/.cloudflared)"
+  echo ""
+  echo -e "${DIM}Requires: cloudflared (brew install cloudflared)${NC}"
 }
 
 cmd_version() {
