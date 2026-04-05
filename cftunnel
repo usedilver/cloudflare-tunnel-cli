@@ -154,40 +154,74 @@ cmd_run_interactive() {
     die "No tunnels configured.\nCreate one with: cftunnel create <name> <domain> <port>"
   fi
 
-  echo -e "${BOLD}Available tunnels:${NC}"
-  echo ""
-
   local names=() hostnames=() ports=()
   for i in "${!configs[@]}"; do
     local file="${configs[$i]}"
-    local fname
-    fname=$(basename "$file" .yml)
-    local host
-    host=$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')
-    local port
-    port=$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')
-
-    names+=("$fname")
-    hostnames+=("$host")
-    ports+=("$port")
-
-    printf "  ${YELLOW}%2d)${NC} ${BOLD}%-20s${NC}  ${BLUE}https://%-30s${NC}  ${DIM}:${port}${NC}\n" \
-      "$((i+1))" "$fname" "$host"
+    names+=("$(basename "$file" .yml)")
+    hostnames+=("$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')")
+    ports+=("$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')")
   done
 
-  echo ""
-  echo -ne "${CYAN}Select tunnel (1-${#configs[@]}) or 'q' to quit: ${NC}"
-  read -r choice
+  local selected=0
+  local total=${#names[@]}
 
-  [[ "$choice" == "q" || "$choice" == "Q" ]] && exit 0
+  # Save terminal state and hide cursor
+  tput smcup 2>/dev/null || true
+  tput civis 2>/dev/null || true
 
-  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#configs[@]} )); then
-    die "Invalid selection."
-  fi
+  # Restore terminal on exit
+  trap '_selector_cleanup' EXIT
 
-  local idx=$((choice - 1))
-  echo ""
-  cmd_run "${names[$idx]}"
+  while true; do
+    # Move cursor to top
+    tput cup 0 0 2>/dev/null || printf '\033[H'
+    tput ed 2>/dev/null || printf '\033[J'
+
+    echo -e "${BOLD}Select a tunnel${NC}  ${DIM}(↑/↓ navigate, enter select, q quit)${NC}"
+    echo ""
+
+    for i in "${!names[@]}"; do
+      if [[ $i -eq $selected ]]; then
+        printf "  ${GREEN}❯${NC} ${BOLD}%-20s${NC}  ${BLUE}https://%-30s${NC}  ${DIM}:%s${NC}\n" \
+          "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
+      else
+        printf "    ${DIM}%-20s${NC}  ${DIM}https://%-30s${NC}  ${DIM}:%s${NC}\n" \
+          "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
+      fi
+    done
+
+    # Read a single keypress
+    IFS= read -rsn1 key
+
+    case "$key" in
+      $'\x1b')  # Escape sequence (arrow keys)
+        read -rsn2 -t 0.1 seq || true
+        case "$seq" in
+          '[A') ((selected > 0)) && ((selected--)) ;;           # Up
+          '[B') ((selected < total - 1)) && ((selected++)) ;;   # Down
+        esac
+        ;;
+      k) ((selected > 0)) && ((selected--)) ;;             # vim up
+      j) ((selected < total - 1)) && ((selected++)) ;;     # vim down
+      '') # Enter
+        _selector_cleanup
+        trap - EXIT
+        echo ""
+        cmd_run "${names[$selected]}"
+        return
+        ;;
+      q|Q)
+        _selector_cleanup
+        trap - EXIT
+        exit 0
+        ;;
+    esac
+  done
+}
+
+_selector_cleanup() {
+  tput cnorm 2>/dev/null || true   # Show cursor
+  tput rmcup 2>/dev/null || true   # Restore terminal
 }
 
 # cftunnel list
