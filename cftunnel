@@ -42,15 +42,47 @@ open_url() {
   fi
 }
 
+# -- Tunnel parsing -----------------------------------------------------------
+# Shared arrays populated by _load_tunnels
+_t_names=() _t_hosts=() _t_ports=() _t_ids=()
+
+_load_tunnels() {
+  _t_names=() _t_hosts=() _t_ports=() _t_ids=()
+  local configs=()
+  while IFS= read -r f; do
+    configs+=("$f")
+  done < <(grep -l "tunnel:" "${CLOUDFLARED_DIR}"/*.yml 2>/dev/null || true)
+
+  if [[ ${#configs[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  for file in "${configs[@]}"; do
+    _t_names+=("$(basename "$file" .yml)")
+    _t_hosts+=("$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')")
+    _t_ports+=("$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')")
+    _t_ids+=("$(grep '^tunnel:' "$file" | awk '{print $NF}')")
+  done
+}
+
+_print_tunnel_row() {
+  local name="$1" host="$2" port="$3" tid="$4" prefix="$5" style="$6"
+  if [[ "$style" == "active" ]]; then
+    printf "${prefix}${BOLD}%-20s${NC}  ${BLUE}%-35s${NC}  ${CYAN}:%-5s${NC}  ${DIM}%-36s${NC}\n" "$name" "$host" "$port" "$tid"
+  else
+    printf "${prefix}${DIM}%-20s  %-35s  :%-5s  %-36s${NC}\n" "$name" "$host" "$port" "$tid"
+  fi
+}
+
 # -- Subcommands --------------------------------------------------------------
 
 # cftunnel create <name> <domain> <port>
 cmd_create() {
   if [[ $# -lt 3 ]]; then
-    echo "Usage: cftunnel create <name> <domain> <port>"
+    echo -e "${BOLD}Usage:${NC} cftunnel create <name> <domain> <port>"
     echo ""
-    echo "Example: cftunnel create my-api example.com 3000"
-    echo "  -> Creates tunnel 'my-api' at my-api.example.com:3000"
+    echo -e "${DIM}Example:${NC} cftunnel create my-api example.com 3000"
+    echo -e "         Creates tunnel 'my-api' at my-api.example.com:3000"
     exit 1
   fi
 
@@ -105,13 +137,12 @@ EOF
 
   ok "Config generated: ${config_file}"
   echo ""
-  echo -e "${GREEN}========================================${NC}"
-  echo -e "  Tunnel ${BOLD}${name}${NC} ready"
-  echo -e "  URL:    ${BLUE}https://${hostname}${NC}"
-  echo -e "  Port:   localhost:${port}"
-  echo -e ""
-  echo -e "  Run: ${YELLOW}cftunnel run ${name}${NC}"
-  echo -e "${GREEN}========================================${NC}"
+  echo -e "  ${GREEN}✔${NC} Tunnel ${BOLD}${name}${NC} ready"
+  echo ""
+  echo -e "  URL     ${BLUE}https://${hostname}${NC}"
+  echo -e "  Port    localhost:${port}"
+  echo -e "  Run     ${YELLOW}cftunnel run ${name}${NC}"
+  echo ""
 }
 
 # cftunnel run [name]
@@ -145,24 +176,10 @@ cmd_run() {
 }
 
 cmd_run_interactive() {
-  local configs=()
-  while IFS= read -r f; do
-    configs+=("$f")
-  done < <(grep -l "tunnel:" "${CLOUDFLARED_DIR}"/*.yml 2>/dev/null || true)
-
-  if [[ ${#configs[@]} -eq 0 ]]; then
-    die "No tunnels configured.\nCreate one with: cftunnel create <name> <domain> <port>"
-  fi
-
-  local names=() hostnames=() ports=()
-  for file in "${configs[@]}"; do
-    names+=("$(basename "$file" .yml)")
-    hostnames+=("$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')")
-    ports+=("$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')")
-  done
+  _load_tunnels || die "No tunnels configured.\nCreate one with: cftunnel create <name> <domain> <port>"
 
   local selected=0
-  local total=${#names[@]}
+  local total=${#_t_names[@]}
 
   # Disable strict mode for interactive input handling
   set +e
@@ -170,19 +187,18 @@ cmd_run_interactive() {
   tput civis 2>/dev/null
 
   while true; do
-    # Clear and redraw
     printf '\033[H\033[J'
 
     echo -e "${BOLD}Select a tunnel${NC}  ${DIM}(↑/↓ navigate, enter select, q quit)${NC}"
     echo ""
+    printf "    ${DIM}%-20s  %-35s  %-6s  %-36s${NC}\n" "NAME" "HOSTNAME" "PORT" "TUNNEL ID"
+    echo ""
 
-    for i in "${!names[@]}"; do
+    for i in "${!_t_names[@]}"; do
       if [[ $i -eq $selected ]]; then
-        printf "  ${GREEN}❯${NC} ${BOLD}%-20s${NC}  ${BLUE}https://%-30s${NC}  ${DIM}:%s${NC}\n" \
-          "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
+        _print_tunnel_row "${_t_names[$i]}" "${_t_hosts[$i]}" "${_t_ports[$i]}" "${_t_ids[$i]}" "  ${GREEN}❯${NC} " "active"
       else
-        printf "    ${DIM}%-20s  https://%-30s  :%s${NC}\n" \
-          "${names[$i]}" "${hostnames[$i]}" "${ports[$i]}"
+        _print_tunnel_row "${_t_names[$i]}" "${_t_hosts[$i]}" "${_t_ports[$i]}" "${_t_ids[$i]}" "    " "dim"
       fi
     done
 
@@ -203,7 +219,7 @@ cmd_run_interactive() {
         tput cnorm 2>/dev/null
         set -e
         echo ""
-        cmd_run "${names[$selected]}"
+        cmd_run "${_t_names[$selected]}"
         return
         ;;
       q|Q)
@@ -217,12 +233,7 @@ cmd_run_interactive() {
 
 # cftunnel list
 cmd_list() {
-  local configs=()
-  while IFS= read -r f; do
-    configs+=("$f")
-  done < <(grep -l "tunnel:" "${CLOUDFLARED_DIR}"/*.yml 2>/dev/null || true)
-
-  if [[ ${#configs[@]} -eq 0 ]]; then
+  if ! _load_tunnels; then
     info "No tunnels configured."
     echo "  Create one with: cftunnel create <name> <domain> <port>"
     return
@@ -230,21 +241,11 @@ cmd_list() {
 
   echo -e "${BOLD}Configured tunnels:${NC}"
   echo ""
-  printf "  ${DIM}%-20s %-35s %-8s %-40s${NC}\n" "NAME" "HOSTNAME" "PORT" "TUNNEL ID"
-  printf "  ${DIM}%-20s %-35s %-8s %-40s${NC}\n" "----" "--------" "----" "---------"
+  printf "    ${DIM}%-20s  %-35s  %-6s  %-36s${NC}\n" "NAME" "HOSTNAME" "PORT" "TUNNEL ID"
+  echo ""
 
-  for file in "${configs[@]}"; do
-    local fname
-    fname=$(basename "$file" .yml)
-    local host
-    host=$(grep 'hostname:' "$file" | head -n1 | awk '{print $NF}')
-    local port
-    port=$(grep 'service: http://localhost:' "$file" | head -n1 | sed 's/.*localhost://' | tr -d '[:space:]')
-    local tid
-    tid=$(grep '^tunnel:' "$file" | awk '{print $NF}')
-
-    printf "  ${BOLD}%-20s${NC} ${BLUE}%-35s${NC} ${CYAN}%-8s${NC} ${DIM}%-40s${NC}\n" \
-      "$fname" "$host" ":${port}" "$tid"
+  for i in "${!_t_names[@]}"; do
+    _print_tunnel_row "${_t_names[$i]}" "${_t_hosts[$i]}" "${_t_ports[$i]}" "${_t_ids[$i]}" "    " "active"
   done
   echo ""
 }
@@ -252,7 +253,7 @@ cmd_list() {
 # cftunnel delete <name>
 cmd_delete() {
   if [[ $# -lt 1 ]]; then
-    echo "Usage: cftunnel delete <name>"
+    echo -e "${BOLD}Usage:${NC} cftunnel delete <name>"
     exit 1
   fi
 
@@ -297,12 +298,13 @@ cmd_delete() {
 
   echo ""
   ok "Tunnel '${name}' fully deleted."
+  echo ""
 }
 
 # cftunnel edit <name>
 cmd_edit() {
   if [[ $# -lt 1 ]]; then
-    echo "Usage: cftunnel edit <name>"
+    echo -e "${BOLD}Usage:${NC} cftunnel edit <name>"
     exit 1
   fi
 
@@ -318,9 +320,9 @@ cmd_edit() {
 # cftunnel port <name> <new-port>
 cmd_port() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: cftunnel port <name> <new-port>"
+    echo -e "${BOLD}Usage:${NC} cftunnel port <name> <new-port>"
     echo ""
-    echo "Change the port of an existing tunnel."
+    echo -e "${DIM}Change the port of an existing tunnel.${NC}"
     exit 1
   fi
 
@@ -355,13 +357,13 @@ cmd_help() {
   echo "  cftunnel <command> [arguments]"
   echo ""
   echo -e "${BOLD}COMMANDS:${NC}"
-  echo -e "  ${GREEN}create${NC} <name> <domain> <port>   Create tunnel + DNS route + config"
-  echo -e "  ${GREEN}run${NC}    [name]                     Run tunnel (interactive if no name given)"
-  echo -e "  ${GREEN}list${NC}                              List configured tunnels"
-  echo -e "  ${GREEN}delete${NC} <name>                     Delete tunnel and related files"
-  echo -e "  ${GREEN}edit${NC}   <name>                     Edit tunnel YAML config"
-  echo -e "  ${GREEN}port${NC}   <name> <port>              Change tunnel port"
-  echo -e "  ${GREEN}status${NC}                            Show tunnels in Cloudflare"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "create" "<name> <domain> <port>" "Create tunnel + DNS route + config"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "run"    "[name]"                  "Run tunnel (interactive if no name given)"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "list"   ""                        "List configured tunnels"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "delete" "<name>"                  "Delete tunnel and related files"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "edit"   "<name>"                  "Edit tunnel YAML config"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "port"   "<name> <port>"           "Change tunnel port"
+  printf "  ${GREEN}%-8s${NC} %-28s %s\n" "status" ""                        "Show tunnels in Cloudflare"
   echo ""
   echo -e "${BOLD}EXAMPLES:${NC}"
   echo "  cftunnel create my-api example.com 3000"
