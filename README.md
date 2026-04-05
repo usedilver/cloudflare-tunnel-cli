@@ -149,6 +149,15 @@ cftunnel status
 | ----------------- | ---------------- | ---------------------------------- |
 | `CLOUDFLARED_DIR` | `~/.cloudflared` | Directory where configs are stored |
 
+## Documentation
+
+For more details on how Cloudflare Tunnels work, check the official docs:
+
+- [Cloudflare Tunnel overview](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)
+- [Create a tunnel (Dashboard)](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/)
+- [Create a locally-managed tunnel (CLI)](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/create-local-tunnel/)
+- [Tunnel run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)
+
 ## Compatibility
 
 - macOS (auto-opens browser with `open`)
